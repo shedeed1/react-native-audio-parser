@@ -25,9 +25,9 @@ export interface AudioParserConfig {
 	bucketCount: number;
 }
 
-interface AudioEqualizerData {
+interface EqualizerData {
 	/**
-   * Volume is a number representing the total volume of the audio chunk
+   * Volume is a number representing the peak volume of the audio chunk
    */
 	volume: number;
 
@@ -53,9 +53,26 @@ interface AudioEqualizerData {
 	};
 }
 
+interface RecordingEqualizerData extends EqualizerData {
+	/**
+   * Represents raw buffer data, this needs to be converted back to 8-bit or 16-bit PCM data
+   * The raw audio data emitted will be either in the form of ByteArray (for 8-bit samples) or ShortArray (for 16-bit samples). These data formats are transferred as arrays of integers to React Native.
+   * You'll need to ensure that the data is correctly interpreted on the JavaScript side.
+   * Example: new Uint8Array(buffer)
+   */
+	rawBuffer: number[];
+}
+
+interface FileEqualizerData extends RecordingEqualizerData {
+	/**
+   * Represents the percentage of the file that has been read, returns 100 when the file has been fully read
+   */
+	percentageRead: number;
+}
+
 interface AudioParser {
 	/**
-   * Initialize the audio recorder
+   * Initialize the audio parser instance
    * @param config
    */
 	init: (config: AudioParserConfig) => void;
@@ -69,24 +86,48 @@ interface AudioParser {
    * Stop the audio recording
    */
 	stop: () => void;
+	/**
+   * Start reading audio chunks from a WAV file, and emit back AudioEqualizerData
+   */
+	startFromFile: (uri: string) => void;
+	/**
+   * Stop reading audio chunks from a WAV file
+   */
+	stopReadingFile: () => void;
 
 	/**
    * Get the audio equalizer data
    */
-	on: (event: string, callback: (data: AudioEqualizerData) => void) => void;
+	onRecording: (
+		event: string,
+		callback: (data: RecordingEqualizerData) => void,
+	) => void;
+	/**
+   * Get the audio equalizer data
+   */
+	onFileRead: (
+		event: string,
+		callback: (data: FileEqualizerData) => void,
+	) => void;
 
-	AudioEvent: string;
+	RecordingData: string;
+	FileData: string;
+	unregisterAll: () => void;
 }
 
 const eventsMap: {
 	[key: string]: string;
 } = {
-	audioData: 'audioData'
+	RecordingData: 'RecordingData',
+	FileData: 'FileData'
 };
 
 export default {
 	...NativeModules.AudioParser,
-	on: (event: keyof typeof eventsMap, callback: (data: string) => void) => {
+	onFileRead: function(
+		event: keyof typeof eventsMap,
+		callback: (data: string) => void,
+	) {
 		const nativeEvent = eventsMap[event];
 		if (!nativeEvent) {
 			throw new Error('Invalid event');
@@ -94,5 +135,21 @@ export default {
 		EventEmitter.removeAllListeners(nativeEvent);
 		return(EventEmitter.addListener(nativeEvent, callback));
 	},
-	AudioEvent: 'audioData'
+	onRecording: function(
+		event: keyof typeof eventsMap,
+		callback: (data: string) => void,
+	) {
+		const nativeEvent = eventsMap[event];
+		if (!nativeEvent) {
+			throw new Error('Invalid event');
+		}
+		EventEmitter.removeAllListeners(nativeEvent);
+		return(EventEmitter.addListener(nativeEvent, callback));
+	},
+	unregisterAll: function() {
+		EventEmitter.removeAllListeners(eventsMap.RecordingData);
+		EventEmitter.removeAllListeners(eventsMap.FileData);
+	},
+	RecordingData: 'RecordingData',
+	FileData: 'FileData'
 } as AudioParser;
