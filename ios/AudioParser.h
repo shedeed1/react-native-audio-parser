@@ -18,4 +18,7 @@ typedef struct {
 @interface AudioParser: RCTEventEmitter <RCTBridgeModule>
     @property (nonatomic, assign) AQRecordState recordState;
     @property (nonatomic, strong) LibFFT *fftProcessor;
+    @property (nonatomic, assign) NSUInteger totalFrames;
+    @property (nonatomic, assign) NSUInteger framesRead;
+    @property (nonatomic, assign) BOOL shouldContinueReading;
 @end
