@@ -11,7 +11,6 @@ import android.media.MediaRecorder.AudioSource
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
-import androidx.media3.common.C
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContext
