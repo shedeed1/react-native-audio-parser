@@ -3,7 +3,9 @@ package com.audioparser
 import android.annotation.SuppressLint
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
+import android.media.AudioTrack
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -79,6 +81,7 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
         var fileSize = 0L
         var bytesRead = 0L
         var isReading = false
+        var audioTrack: AudioTrack? = null
         override fun run() {
             isReading = true;
             val uri = Uri.parse(uriString)
@@ -118,6 +121,9 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
                 val outputBuffers = codec.outputBuffers
                 var isEOS = false
 
+                audioTrack = setupAudioTrack(format)
+                audioTrack?.play()
+
                 while (!isEOS && isReading) {
                     val inputBufferIndex = codec.dequeueInputBuffer(10000)
                     if (inputBufferIndex >= 0) {
@@ -146,6 +152,7 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
                         outputBuffer.get(sampleData)
                         outputBuffer.clear()
 
+                        audioTrack?.write(sampleData, 0, bufferInfo.size)
                         processBuffer(sampleData, format)
 
                         codec.releaseOutputBuffer(outputBufferIndex, false)
@@ -161,7 +168,31 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
                 codec?.stop()
                 codec?.release()
                 extractor.release()
+                audioTrack?.stop()
+                audioTrack?.release()
+                isReading = false
             }
+        }
+
+        private fun setupAudioTrack(format: MediaFormat): AudioTrack {
+            val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val channelConfig = if (format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) == 2)
+                AudioFormat.CHANNEL_OUT_STEREO
+            else
+                AudioFormat.CHANNEL_OUT_MONO
+
+            val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+
+            val minBufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+
+            return AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                sampleRate,
+                channelConfig,
+                audioFormat,
+                minBufferSize,
+                AudioTrack.MODE_STREAM
+            )
         }
 
         private fun selectTrack(extractor: MediaExtractor): Int {
@@ -515,6 +546,11 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun startFromFile(uriString: String) {
+        if (fileThread != null) {
+            if (fileThread?.isReading == true) {
+                return
+            }
+        }
         fileThread = FileProcessingThread(uriString, reactContext)
         fileThread?.start()
     }

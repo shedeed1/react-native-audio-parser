@@ -46,6 +46,14 @@ class LibFFT(bufferSize: Int) {
     }
 
     fun transform(inBuffer: FloatArray): FloatArray {
+        val paddedInput = if (inBuffer.size < fftN) {
+            FloatArray(fftN) { index ->
+                if (index < inBuffer.size) inBuffer[index] else 0f
+            }
+        } else {
+            inBuffer
+        }
+
         var j0 = 1
         var idx = fftNLog - 1
         var cosv: Double
@@ -53,7 +61,7 @@ class LibFFT(bufferSize: Int) {
         var tmpr: Double
         var tmpi: Double
         for (i in 0 until fftN) {
-            real[i] = inBuffer[bitReverse[i]].toDouble()
+            real[i] = paddedInput[bitReverse[i]].toDouble()
             imag[i] = 0.0
         }
 

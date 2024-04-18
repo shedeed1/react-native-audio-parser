@@ -24,6 +24,11 @@ RCT_EXPORT_METHOD(init:(NSDictionary *) options) {
 }
 
 RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
+     if (self.isAudioProcessingActive) {
+          RCTLogError(@"[AudioParser] Audio processing is already active.");
+          return;
+      }
+     self.isAudioProcessingActive = YES;
     _shouldContinueReading = YES;
     dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         NSURL *fileURL = [NSURL URLWithString:fileURI];
@@ -31,14 +36,23 @@ RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
         AVAudioFile *audioFile = [[AVAudioFile alloc] initForReading:fileURL error:&error];
 
         if (!audioFile || error) {
+            self.isAudioProcessingActive = NO;
             RCTLogError(@"[AudioParser] Could not open file: %@", error);
             return;
         }
 
-        self.totalFrames = (NSUInteger)audioFile.length;
-        self.framesRead = 0; // Initialize framesRead at the start of reading
-        self.shouldContinueReading = YES; // Ensure this is reset before starting
+        NSError *playerError = nil;
+        self.audioPlayer = [[AVAudioPlayer alloc] initWithContentsOfURL:fileURL error:&playerError];
+        if (!self.audioPlayer || playerError) {
+            self.isAudioProcessingActive = NO;
+            RCTLogError(@"[AudioParser] Could not create audio player: %@", playerError);
+            return;
+        }
 
+        self.totalFrames = (NSUInteger)audioFile.length;
+        self.framesRead = 0;
+
+        [self.audioPlayer play];
         [self setupFileReadingSession:audioFile];
     });
 }
@@ -47,16 +61,12 @@ RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
     AVAudioFormat *processingFormat = audioFile.processingFormat;
     AVAudioFrameCount bufferSize = _recordState.bufferByteSize;
 
-    NSLog(@"Audio File Format: %@", audioFile.fileFormat);
-    NSLog(@"Processing Format: %@", processingFormat);
-
-    while (_shouldContinueReading) {
+    while (_shouldContinueReading && self.audioPlayer.isPlaying) {
         AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:processingFormat frameCapacity:bufferSize];
         NSError *error = nil;
 
         BOOL success = [audioFile readIntoBuffer:pcmBuffer error:&error];
         if (!success || error) {
-
             break;
         }
 
@@ -64,8 +74,15 @@ RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
             break;  // EOF
         }
 
-        self.framesRead += pcmBuffer.frameLength; // Update frames read
+        self.framesRead += pcmBuffer.frameLength;
         [self processAudioBuffer:pcmBuffer format:processingFormat];
+
+        // Synchronize the data emission to the playback time
+        double processedTime = (double)self.framesRead / processingFormat.sampleRate;
+        double playbackTime = self.audioPlayer.currentTime;
+        if (processedTime > playbackTime) {
+            [NSThread sleepForTimeInterval:processedTime - playbackTime];
+        }
     }
 }
 
@@ -206,8 +223,11 @@ RCT_EXPORT_METHOD(stop) {
 
 RCT_EXPORT_METHOD(stopReadingFile) {
     dispatch_async(dispatch_get_main_queue(), ^{
+        [self.audioPlayer stop];
+        self.audioPlayer = nil;
         RCTLogInfo(@"Stopping file read");
         self.shouldContinueReading = NO;
+        self.isAudioProcessingActive = NO;
     });
 }
 
@@ -306,8 +326,17 @@ void process8BitSamples(uint8_t *samples, int numSamples, AQRecordState *pRecord
 }
 
 - (void)dealloc {
-    RCTLogInfo(@"[AudioParser] dealloc");
-    AudioQueueDispose(_recordState.mQueue, true);
+      if (self.audioPlayer.isPlaying) {
+          [self.audioPlayer stop];
+      }
+      self.audioPlayer = nil;
+     if (_recordState.mIsRunning) {
+        AudioQueueStop(_recordState.mQueue, true);
+        AudioQueueDispose(_recordState.mQueue, true);
+        _recordState.mIsRunning = false;
+     }
+     self.isAudioProcessingActive = NO;
+     RCTLogInfo(@"[AudioParser] dealloc");
 }
 
 @end
