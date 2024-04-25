@@ -27,6 +27,8 @@ import com.facebook.react.bridge.WritableNativeArray
 
 import com.facebook.react.bridge.WritableArray
 import java.io.IOException
+import java.io.InputStream
+import java.net.URL
 import java.nio.ByteOrder
 
 
@@ -36,6 +38,7 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
     ) {
     private var recordThread: RecordThread? = null
     private var fileThread: FileProcessingThread? = null
+    private var urlThread: URLProcessingThread? = null
     override fun getName(): String {
         return "AudioParser"
     }
@@ -72,6 +75,226 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
         )
     }
 
+    data class WavHeader(val sampleRate: Int, val numChannels: Int, val bitDepth: Int)
+
+    private inner class URLProcessingThread(
+        private val urlString: String,
+        private val reactContext: ReactApplicationContext
+    ) : Thread() {
+        private val eventEmitter = reactContext.getJSModule(ReactContext.RCTDeviceEventEmitter::class.java)
+        var isProcessing = false
+        var audioTrack: AudioTrack? = null
+        var bytesRead: Int = 0
+        var percentageRead: Double = 0.0
+        var audioFormat: Int = AudioFormat.ENCODING_PCM_16BIT
+        var numChannels: Int = 1
+
+        override fun run() {
+            isProcessing = true
+            var inputStream: InputStream? = null
+            try {
+                val url = URL(urlString)
+                val connection = url.openConnection()
+                connection.connect()
+                inputStream = connection.getInputStream()
+                val totalSize = connection.contentLength.toFloat()
+
+                val bufferSize = AudioTrack.getMinBufferSize(44100, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT);
+                val buffer = ByteArray(bufferSize)
+                var totalBytesRead = 0
+
+                val header = parseWavHeader(inputStream)
+                audioTrack = setupAudioTrack(header)
+                audioTrack?.play()
+
+                while (isProcessing && inputStream.read(buffer).also { bytesRead = it } != -1) {
+                    totalBytesRead += bytesRead
+                    percentageRead = (totalBytesRead / totalSize * 100.0)
+                    processAndPlayChunk(buffer, bytesRead)
+                }
+            } catch (e: IOException) {
+                Log.e("AudioParser", "Error processing URL", e)
+            } finally {
+                inputStream?.close()
+                audioTrack?.stop()
+                audioTrack?.release()
+                isProcessing = false
+            }
+        }
+
+        private fun parseWavHeader(inputStream: InputStream): WavHeader {
+            val buffer = ByteArray(44)  // Standard size of WAV header
+            inputStream.read(buffer, 0, 44)
+            val wrappedBuffer = ByteBuffer.wrap(buffer).order(ByteOrder.LITTLE_ENDIAN)
+
+            // Skipping first 22 bytes (RIFF header, etc.)
+            wrappedBuffer.position(22)
+            val numChannels = wrappedBuffer.short.toInt()
+            val sampleRate = wrappedBuffer.int
+            wrappedBuffer.position(34)
+            val bitDepth = wrappedBuffer.short.toInt()
+
+            return WavHeader(sampleRate, numChannels, bitDepth)
+        }
+
+        private fun setupAudioTrack(header: WavHeader): AudioTrack {
+            val channelConfig = if (header.numChannels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
+            audioFormat = if (header.bitDepth == 16) AudioFormat.ENCODING_PCM_16BIT else AudioFormat.ENCODING_PCM_8BIT
+            val minBufferSize = AudioTrack.getMinBufferSize(header.sampleRate, channelConfig, audioFormat)
+            numChannels = header.numChannels
+            return AudioTrack(
+                AudioManager.STREAM_MUSIC,
+                header.sampleRate,
+                channelConfig,
+                audioFormat,
+                max(4096, minBufferSize),
+                AudioTrack.MODE_STREAM
+            )
+        }
+
+
+        private fun processAndPlayChunk(data: ByteArray, bytesRead: Int) {
+            // Assuming data is already PCM encoded, if not, decoding needs to be handled
+            audioTrack?.write(data, 0, bytesRead)
+            processBuffer(data)
+        }
+
+        private fun processBuffer(sampleData: ByteArray) {
+            if (audioFormat == AudioFormat.ENCODING_PCM_16BIT) {
+                val shortData = ByteBuffer.wrap(sampleData).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                val buffer = ShortArray(shortData.remaining())
+                shortData.get(buffer)
+                if (numChannels == 1) {
+                    if (buffer.isNotEmpty())
+                        processMono(buffer)
+                } else {
+                    if (buffer.isNotEmpty())
+                        processStereo(buffer)
+                }
+            }
+            if (audioFormat == AudioFormat.ENCODING_PCM_8BIT) {
+                val buffer = ByteArray(sampleData.size)
+                for (i in sampleData.indices) {
+                    buffer[i] = sampleData[i]
+                }
+                if (numChannels == 1) {
+                    processMono(buffer)
+                } else {
+                    processStereo(buffer)
+                }
+            }
+        }
+
+        private fun processMono(buffer: Any) {
+            val (fftBuffer, volume) = convertToFloatArrayAndCalculateVolume(buffer)
+            emitResults(fftBuffer, volume)
+        }
+
+        private fun processStereo(buffer: Any) {
+            val (leftBuffer, rightBuffer) = splitChannels(buffer)
+            val (leftFftBuffer, leftVolume) = convertToFloatArrayAndCalculateVolume(leftBuffer)
+            val (rightFftBuffer, rightVolume) = convertToFloatArrayAndCalculateVolume(rightBuffer)
+            emitStereoResults(leftFftBuffer, leftVolume, rightFftBuffer, rightVolume)
+        }
+
+        private fun splitChannels(buffer: Any): Pair<Any, Any> {
+            if (buffer is ByteArray) {
+                val left = ByteArray(buffer.size / 2)
+                val right = ByteArray(buffer.size / 2)
+                for (i in buffer.indices step 2) {
+                    left[i / 2] = buffer[i]
+                    right[i / 2] = buffer[i + 1]
+                }
+                return Pair(left, right)
+            } else if (buffer is ShortArray) {
+                val left = ShortArray(buffer.size / 2)
+                val right = ShortArray(buffer.size / 2)
+                for (i in buffer.indices step 2) {
+                    left[i / 2] = buffer[i]
+                    right[i / 2] = buffer[i + 1]
+                }
+                return Pair(left, right)
+            }
+            throw IllegalArgumentException("Unknown buffer type")
+        }
+
+        private fun convertToFloatArrayAndCalculateVolume(buffer: Any): Pair<FloatArray, Double> {
+            var volume = 0.0
+            val floatBuffer = when (buffer) {
+                is ByteArray -> FloatArray(buffer.size) {
+                    ((buffer[it].toInt() and 0xFF) - 128).also { byteValue ->
+                        volume += abs(byteValue)
+                    }.toFloat()
+                }
+                is ShortArray -> FloatArray(buffer.size) {
+                    buffer[it].toFloat().also { shortValue ->
+                        volume += abs(shortValue)
+                    }
+                }
+                else -> throw IllegalArgumentException("Unknown buffer type")
+            }
+            volume /= floatBuffer.size
+            return Pair(floatBuffer, volume)
+        }
+
+        private fun emitResults(fftBuffer: FloatArray, volume: Double) {
+            val maxVolume = if (audioFormat == AudioFormat.ENCODING_PCM_8BIT) 128.0 else 32768.0
+            val normalizedVolume = normalizeVolume(volume, maxVolume, 0.0, 10.0)
+            val fftResult = performFFT(fftBuffer)
+            val params = Arguments.createMap().apply {
+                putDouble("volume", normalizedVolume)
+                putArray("buckets", fftResult.toWritableArray())
+                putDouble("percentageRead", percentageRead);
+            }
+            eventEmitter.emit("URLData", params)
+        }
+
+        private fun emitStereoResults(leftFftBuffer: FloatArray, leftVolume: Double, rightFftBuffer: FloatArray, rightVolume: Double) {
+            val leftFftResult = performFFT(leftFftBuffer)
+            val rightFftResult = performFFT(rightFftBuffer)
+
+            val maxVolume = if (audioFormat == AudioFormat.ENCODING_PCM_8BIT) 128.0 else 32768.0
+
+            val normalizedLeftVolume = normalizeVolume(leftVolume, maxVolume, 0.0, 10.0)
+            val normalizedRightVolume = normalizeVolume(rightVolume, maxVolume, 0.0, 10.0)
+
+            val params = Arguments.createMap().apply {
+                putDouble("volume", (normalizedLeftVolume + normalizedRightVolume) / 2)
+                putArray("buckets", leftFftResult.toWritableArray())
+                putDouble("percentageRead", percentageRead);
+
+                val channelData = Arguments.createMap().apply {
+                    putMap("left", Arguments.createMap().apply {
+                        putDouble("volume", normalizedLeftVolume)
+                        putArray("buckets", leftFftResult.toWritableArray())
+                    })
+                    putMap("right", Arguments.createMap().apply {
+                        putDouble("volume", normalizedRightVolume)
+                        putArray("buckets", rightFftResult.toWritableArray())
+                    })
+                }
+                putMap("channel", channelData)
+            }
+            eventEmitter.emit("URLData", params)
+        }
+
+        private fun performFFT(buffer: FloatArray): FloatArray {
+            val fft = LibFFT(buffer.size / numChannels)
+            val fftResult = fft.transform(buffer)
+            return fftResult
+        }
+
+        private fun normalizeVolume(volume: Double, maxPossibleVolume: Double, minTargetVolume: Double, maxTargetVolume: Double): Double {
+            return minTargetVolume + (volume / maxPossibleVolume) * (maxTargetVolume - minTargetVolume)
+        }
+
+        private fun FloatArray.toWritableArray(): WritableArray {
+            return WritableNativeArray().also { array ->
+                this.forEach { array.pushDouble(it.toDouble()) }
+            }
+        }
+    }
+
     private inner class FileProcessingThread(
         private val uriString: String,
         private val reactContext: ReactApplicationContext
@@ -84,11 +307,26 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
         var audioTrack: AudioTrack? = null
         override fun run() {
             isReading = true;
+            if (uriString.isEmpty()) {
+                Log.e("AudioParser", "Invalid URI")
+                return;
+            }
+
             val uri = Uri.parse(uriString)
+            if (!uri.isAbsolute || uri.scheme == null) {
+                Log.e("AudioParser", "Invalid URI")
+                return;
+            }
             val extractor = MediaExtractor()
             var codec: MediaCodec? = null
 
-            fileSize = getFileSize(uri)
+            try {
+                fileSize = getFileSize(uri)
+            }
+            catch (e: IOException) {
+                Log.e("AudioParser", "Error getting file size", e)
+                return;
+            }
 
             try {
                 extractor.setDataSource(reactContext, uri, null)
@@ -563,7 +801,24 @@ class AudioParserModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod
+    fun startFromURL(urlString: String) {
+        if (urlThread != null) {
+            if (urlThread?.isProcessing == true) {
+                return
+            }
+        }
+        urlThread = URLProcessingThread(urlString, reactContext)
+        urlThread?.start()
+    }
 
+    @ReactMethod
+    fun stopReadingURL() {
+        if (urlThread != null) {
+            urlThread!!.isProcessing = false
+            urlThread = null
+        }
+    }
 
     @ReactMethod
     fun addListener(eventName: String?) {

@@ -70,6 +70,13 @@ interface FileEqualizerData extends RecordingEqualizerData {
 	percentageRead: number;
 }
 
+interface URLEqualizerData extends RecordingEqualizerData {
+	/**
+   * Represents the percentage of the file that has been read from the network, returns 100 when the file has been fully read
+   */
+	percentageRead: number;
+}
+
 interface AudioParser {
 	/**
    * Initialize the audio parser instance
@@ -87,13 +94,22 @@ interface AudioParser {
    */
 	stop: () => void;
 	/**
-   * Start reading audio chunks from a WAV file, and emit back AudioEqualizerData
+   * Start reading audio chunks from a WAV file, and emit back FileEqualizerData
    */
 	startFromFile: (uri: string) => void;
 	/**
    * Stop reading audio chunks from a WAV file
    */
 	stopReadingFile: () => void;
+
+	/**
+   * Start reading audio chunks from an audio URL, and emit back AudioEqualizerData
+   */
+	startFromURL: (url: string) => void;
+	/**
+   * Stop reading audio chunks from a WAV file
+   */
+	stopReadingURL: () => void;
 
 	/**
    * Get the audio equalizer data
@@ -110,8 +126,14 @@ interface AudioParser {
 		callback: (data: FileEqualizerData) => void,
 	) => void;
 
+	onURLRead: (
+		event: string,
+		callback: (data: URLEqualizerData) => void,
+	) => void;
+
 	RecordingData: string;
 	FileData: string;
+	URLData: string;
 	unregisterAll: () => void;
 }
 
@@ -119,7 +141,8 @@ const eventsMap: {
 	[key: string]: string;
 } = {
 	RecordingData: 'RecordingData',
-	FileData: 'FileData'
+	FileData: 'FileData',
+	URLData: 'URLData'
 };
 
 export default {
@@ -146,10 +169,23 @@ export default {
 		EventEmitter.removeAllListeners(nativeEvent);
 		return(EventEmitter.addListener(nativeEvent, callback));
 	},
+	onURLRead: function(
+		event: keyof typeof eventsMap,
+		callback: (data: string) => void,
+	) {
+		const nativeEvent = eventsMap[event];
+		if (!nativeEvent) {
+			throw new Error('Invalid event');
+		}
+		EventEmitter.removeAllListeners(nativeEvent);
+		return(EventEmitter.addListener(nativeEvent, callback));
+	},
 	unregisterAll: function() {
 		EventEmitter.removeAllListeners(eventsMap.RecordingData);
 		EventEmitter.removeAllListeners(eventsMap.FileData);
+		EventEmitter.removeAllListeners(eventsMap.URLData);
 	},
 	RecordingData: 'RecordingData',
-	FileData: 'FileData'
+	FileData: 'FileData',
+	URLData: 'URLData'
 } as AudioParser;

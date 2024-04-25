@@ -24,6 +24,7 @@ RCT_EXPORT_METHOD(init:(NSDictionary *) options) {
 }
 
 RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
+    self.currentAudioSource = @"FileData";
      if (self.isAudioProcessingActive) {
           RCTLogError(@"[AudioParser] Audio processing is already active.");
           return;
@@ -152,11 +153,23 @@ RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
     // Normalize peak volumes
     double normalizedPeakVolume = [self normalizeVolume:peakVolume withMaxPossibleVolume:maxPossibleVolume minTargetVolume:0.0 maxTargetVolume:10.0];
     NSArray<NSNumber *> *fftResults = [self.fftProcessor transform:allSamples];
-    NSMutableDictionary *eventBody = [@{
-            @"volume": @(normalizedPeakVolume),
-            @"buckets": fftResults,
-            @"percentageRead": @(readingPercentage)
-        } mutableCopy];
+    NSMutableDictionary *eventBody;
+    if ([self.currentAudioSource  isEqual: @"FileData"])
+    {
+        eventBody = [@{
+                @"volume": @(normalizedPeakVolume),
+                @"buckets": fftResults,
+                @"percentageRead": @(readingPercentage)
+            } mutableCopy];
+    }
+    else {
+        eventBody = [@{
+                @"volume": @(normalizedPeakVolume),
+                @"buckets": fftResults,
+                @"percentageRead": @((self.stkAudioPlayer.progress / self.stkAudioPlayer.duration) * 100)
+            } mutableCopy];
+    }
+   
 
     if (isStereo) {
         double normalizedLeftPeakVolume = [self normalizeVolume:leftPeakVolume withMaxPossibleVolume:maxPossibleVolume minTargetVolume:0.0 maxTargetVolume:10.0];
@@ -169,7 +182,7 @@ RCT_EXPORT_METHOD(startFromFile:(NSString *)fileURI) {
     }
 
     // Emit the event
-    [self sendEventWithName:@"FileData" body:eventBody];
+    [self sendEventWithName:self.currentAudioSource body:eventBody];
 }
 
 RCT_EXPORT_METHOD(start) {
@@ -230,7 +243,41 @@ RCT_EXPORT_METHOD(stopReadingFile) {
         self.isAudioProcessingActive = NO;
     });
 }
+RCT_EXPORT_METHOD(startFromURL:(NSString *)urlString) {
+    self.currentAudioSource = @"URLData";
+    self.stkAudioPlayer = [[STKAudioPlayer alloc] initWithOptions:(STKAudioPlayerOptions){ .flushQueueOnSeek = YES }];
+    [self.stkAudioPlayer play:urlString];
 
+
+    // Append a frame filter to process audio frames
+    [self.stkAudioPlayer appendFrameFilterWithName:@"MyCustomFilter" block:^(UInt32 channelsPerFrame, UInt32 bytesPerFrame, UInt32 frameCount, void* frames) {
+        int16_t *samples = (int16_t *)frames;
+        NSUInteger numSamples = frameCount * channelsPerFrame;
+
+        // Convert the raw frames to an AVAudioPCMBuffer for processing
+        AVAudioFormat *format = [[AVAudioFormat alloc] initWithCommonFormat:AVAudioPCMFormatInt16 sampleRate:self->_recordState.mDataFormat.mSampleRate channels:channelsPerFrame interleaved:YES];
+
+        AVAudioPCMBuffer *pcmBuffer = [[AVAudioPCMBuffer alloc] initWithPCMFormat:format frameCapacity:frameCount];
+        memcpy(pcmBuffer.int16ChannelData[0], samples, bytesPerFrame * frameCount);
+
+        pcmBuffer.frameLength = frameCount;
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self processAudioBuffer:pcmBuffer format:format];
+        });
+    }];
+}
+RCT_EXPORT_METHOD(stopReadingURL) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (self.stkAudioPlayer) {
+            [self.stkAudioPlayer stop];
+            [self.stkAudioPlayer dispose];
+            self.stkAudioPlayer = nil;
+            RCTLogInfo(@"[AudioParser] Stopped reading from URL");
+        }
+        self.isAudioProcessingActive = NO;
+    });
+}
 void HandleInputBuffer(void *inUserData, AudioQueueRef inAQ, AudioQueueBufferRef inBuffer, const AudioTimeStamp *inStartTime, UInt32 inNumPackets, const AudioStreamPacketDescription *inPacketDesc) {
     AQRecordState *pRecordState = (AQRecordState *)inUserData;
     if (!pRecordState->mIsRunning) return;
@@ -322,7 +369,7 @@ void process8BitSamples(uint8_t *samples, int numSamples, AQRecordState *pRecord
 }
 
 - (NSArray<NSString *> *)supportedEvents {
-    return @[@"RecordingData", @"FileData"];
+    return @[@"RecordingData", @"FileData", @"URLData"];
 }
 
 - (void)dealloc {

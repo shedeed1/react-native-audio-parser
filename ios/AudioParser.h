@@ -2,6 +2,7 @@
  #import <React/RCTEventEmitter.h>
  #import <React/RCTLog.h>
  #import "LibFFT.h"
+#import "STKAudioPlayer.h"
 
  #define kNumberBuffers 3
 
@@ -23,4 +24,7 @@
      @property (nonatomic, assign) BOOL shouldContinueReading;
      @property (strong, nonatomic) AVAudioPlayer *audioPlayer;
      @property (nonatomic) BOOL isAudioProcessingActive;
+
+    @property (nonatomic, strong) STKAudioPlayer *stkAudioPlayer;
+    @property (nonatomic, strong) NSString *currentAudioSource;
  @end

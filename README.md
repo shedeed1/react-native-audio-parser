@@ -9,7 +9,7 @@ data, volume levels, and channel-specific information, which can be vital for ad
 - Real-time and file-based audio parsing.
 - Supports mono and stereo audio inputs.
 - Configurable sample rates, bits per sample, and FFT bucket counts.
-- Ability to parse audio data from live input or read from files.
+- Ability to parse audio data from live input, read from files, or stream from URLs.
 
 ## Installation
 
@@ -19,21 +19,21 @@ Since the library is not yet published on npm, you must manually add it to your 
 
 2. Add the library to your `package.json`:
 
- ```json
- "react-native-audio-parser": "link:./modules/AudioParser"
- ```
+  ```json
+  "react-native-audio-parser": "link:./modules/AudioParser"
+  ```
 
 3. Install `react-native-permissions` and `react-native-document-picker` to handle permissions and file access:
 
- ```bash
- npm install react-native-permissions react-native-document-picker
- ```
+  ```bash
+  npm install react-native-permissions react-native-document-picker
+  ```
 
 or with yarn:
 
- ```bash
- yarn add react-native-permissions react-native-document-picker
- ```
+  ```bash
+  yarn add react-native-permissions react-native-document-picker
+  ```
 
 ## Permissions
 
@@ -42,31 +42,32 @@ permissions in your app:
 
 For Android, update your `AndroidManifest.xml`:
 
- ```xml
+  ```xml
 
 <uses-permission android:name="android.permission.RECORD_AUDIO"/>
- ```
+  ```
 
 For iOS, add the following to your `Info.plist`:
 
- ```xml
+  ```xml
 
 <key>NSMicrophoneUsageDescription</key>
 <string>We need access to your microphone for audio recording.</string>
- ```
+  ```
 
 ## Usage
 
-To use the library, configure the audio parser for either live recording or file reading, handle permission requests,
-and manage the recording or file reading state.
+To use the library, configure the audio parser for either live recording, file reading, or streaming from URLs, handle
+permission requests,
+and manage the recording, file reading, or URL streaming state.
 
 ### Basic Setup
 
 Here's a quick setup guide to integrate the audio parser in your React Native application for both live recording and
 file reading:
 
- ```javascript
- import React from 'react';
+  ```javascript
+  import React from 'react';
 import {View, TouchableOpacity, StatusBar} from 'react-native';
 import {request, PERMISSIONS} from 'react-native-permissions';
 import AudioParser from 'react-native-audio-parser';
@@ -119,6 +120,14 @@ const App = () => {
     AudioParser.stopReadingFile();
   };
 
+  const startURLReading = async () => {
+    AudioParser.startFromURL('https://www2.cs.uic.edu/~i101/SoundFiles/StarWars60.wav');
+  };
+
+  const stopURLReading = () => {
+    AudioParser.stopReadingURL();
+  };
+
   useEffect(() => {
     AudioParser.onRecording(AudioParser.RecordingData, data => {
       console.log('Live frequency data', data.buckets);
@@ -129,6 +138,12 @@ const App = () => {
       console.log('File read percentage', data.percentageRead);
       console.log('File frequency data', data.buckets);
       console.log('File volume data', data.volume);
+    });
+
+    AudioParser.onURLRead(AudioParser.URLData, data => {
+      console.log('URL read percentage', data.percentageRead);
+      console.log('URL frequency data', data.buckets);
+      console.log('URL volume data', data.volume);
     });
 
     return () => {
@@ -157,7 +172,7 @@ const App = () => {
 };
 
 export default App;
- ```
+  ```
 
 ## API Reference
 
@@ -176,6 +191,11 @@ export default App;
   nothing.
 
 - `stopReadingFile()`: Stops reading audio chunks from a WAV file. Returns nothing.
+
+- `startFromURL(url: string)`: Starts streaming audio from a specified URL and handles the data similarly to file or
+  live input. Returns nothing.
+
+- `stopReadingURL()`: Stops streaming audio from a URL. Returns nothing.
 
 - `onRecording(event: string, callback: function)`: Registers a callback for live audio data events. Returns the
   registration ID for the event listener.
